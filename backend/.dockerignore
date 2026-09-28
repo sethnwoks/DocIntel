@@ -1,0 +1,24 @@
+# The host virtualenv. The image installs its own dependencies from
+# requirements.txt into /usr/local, and /app is bind-mounted from the host at
+# runtime, so shipping this 1.5GB copy into the image serves no purpose.
+.venv
+venv
+
+# Bytecode and tooling caches
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# deepeval's local cache directory, created by eval runs
+.deepeval
+
+# Git internals
+.git
+.gitignore
+
+# NOTE: models/ is deliberately NOT ignored. The reranker resolves
+# /app/models/reranker, and keeping it in the image means the image runs
+# correctly even without the bind mount.

@@ -1,0 +1,99 @@
+# Secrets & local config
+.env
+.env.local
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.pytest_cache/
+.coverage
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+*.log
+npm-debug.log*
+
+# IDE/OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project-specific junk (your personal files)
+cookies
+cookies.txt
+CACHED
+ERROR
+reading
+resolve
+transferring
+[internal]
+=
+=1.0.0
+*.pdf
+
+# Personal docs/notes
+docs/
+notebookllm_export/
+seth_adr/
+seth_deep_dive_list/
+CLI_TUTORIAL.md
+NEXT_PLAN_v1.md
+PROJECT_HANDOFF.md
+
+# Specific junk files at root
+A
+overview
+package-lock.json
+docker-compose.yml.backup
+export_to_notebookllm.py
+
+# Scripts - ignore loose scratch files, but keep the schema, the migrations
+# and the terminal client (the README tells people to run scripts/rag_cli).
+scripts/*
+!scripts/schema.sql
+!scripts/migration_parsed_documents.sql
+!scripts/migration_bm25.sql
+!scripts/rag_cli/
+
+# NOTE: backend/tests/ is deliberately NOT ignored. The test suite is part of
+# the showcase, and its current state is documented honestly in the README.
+
+# Frontend build artifacts
+frontend/.next/
+frontend/node_modules/
+frontend/tsconfig.tsbuildinfo
+
+# ONNX reranker weights -- too large for GitHub (model.onnx ~280MB,
+# tokenizer.json ~17MB). Both must be fetched together; shipping one without
+# the other is useless. See "Reranker weights" in the README.
+backend/models/reranker/model.onnx
+backend/models/reranker/tokenizer.json
+
+# Another agent tool's scratch worktrees (contain a nested .git)
+.kilo/
+
+# Database dumps. backups/rag_db_*.sql contains real account emails and bcrypt
+# password hashes from local testing -- never commit this.
+backups/
+*.sql.gz
+
+# Build and eval artefacts
+.build-logs/
+backend/.deepeval/
+backend/goldenset-testdocuments/eval_results*.json
+backend/goldenset-testdocuments/smoke_results.json
+
+# Planning notes for work that is already finished
+LANGCHAIN_INTEGRATION_PLAN.md

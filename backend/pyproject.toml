@@ -1,0 +1,77 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Multi-Tenant RAG Backend"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "fastapi>=0.136.3",
+    "uvicorn>=0.49.0",
+    "openai>=1.0.0",
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "httpx>=0.27.0",
+    "onnxruntime>=1.17.0",
+    "tokenizers>=0.20.0",
+    "langchain>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-postgres>=0.0.18",
+    "langchain-core>=0.3.0",
+    "langchain-community>=0.4.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "langsmith>=0.1.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    # Pinned exactly, not ranged, for both tools. They are part of the project's
+    # definition of "correct", so a contributor's `uv sync` must reproduce the
+    # versions the code was last checked against. A newer release can change
+    # results -- new lint rules, changed collection or assertion behaviour --
+    # and turn a build red for reasons that have nothing to do with the commit.
+    "pytest==9.1.1",
+    "ruff==0.15.13",
+]
+
+[tool.ruff]
+# Pinned explicitly so the standard is reproducible rather than implicit in
+# whatever Ruff's defaults happen to be on a given day.
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# The default Ruff set: pycodestyle (E4/E7/E9 subset) plus Pyflakes (F).
+# Bugbear is deliberately NOT enabled -- B008 flags FastAPI's Depends() in
+# default arguments, which is correct FastAPI style, not a defect.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Settings must be read from the environment before the app modules are
+# imported, so these imports are intentionally not at the top of the file.
+"app/main.py" = ["E402"]
+# Standard Alembic boilerplate: Base is bound in both the sync and async
+# metadata paths.
+"migrations/env.py" = ["F811"]
+# filename / chunk_index / doc_id / similarity are read from chunk metadata
+# but not yet used. They belong to the citation output that is still being
+# built, so they are left in place deliberately rather than deleted.
+"app/chains/rag_chain.py" = ["F841"]
+# retrieval_chain and retriever are the abandoned scaffolding around the
+# duplicated retrieval pass. Tracked for removal, not yet removed.
+"app/api/routers/query.py" = ["F841"]
