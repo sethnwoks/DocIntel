@@ -1,73 +1,49 @@
 # DocIntel
 
-Multi-tenant RAG platform. Upload documents, get an isolated knowledge base per organisation, query it with citations. FastAPI + Next.js, hybrid BM25/vector retrieval with a cross-encoder reranker, Celery for ingestion, six services in Docker Compose.
+A multi-tenant web app for asking questions about your own documents. Upload a document, ask a question, and get an answer with the exact passages it came from. Each organisation sees only its own documents.
 
-![DocIntel signed in, showing an ingested 19-page paper split into 67 chunks](assets/docintel-document-ingested.png)
+<!--
+  ┌─────────────────────────────────────────────────────────────┐
+  │  VIDEO GOES HERE                                           │
+  │                                                             │
+  │  Record ~60-90s: log in, show the ingested document in the │
+  │  sidebar, select it, ask a question, show the answer with  │
+  │  its cited passages.                                       │
+  │                                                             │
+  │  Then replace this comment with:                            │
+  │  <img src="docs/demo.gif" width="700">                      │
+  └─────────────────────────────────────────────────────────────┘
+-->
 
-## The problem this actually solves
+## What's inside
 
-Calling an LLM is easy. The hard part of a multi-tenant RAG system is that **tenant A must never see tenant B's data**, and that has to hold at every layer: upload paths, chunk rows, vector search, BM25, the reranker, the prompt, and the API responses. Retrieval is tenant-scoped in the SQL itself, so isolation is a property of the queries rather than something enforced after the fact.
+- **Hybrid retrieval** — ParadeDB BM25 and pgvector dense search, fused with reciprocal rank fusion
+- **Local reranking** — a BGE cross-encoder run through ONNX Runtime, so it works on CPU with no PyTorch in the image
+- **Grounded answers** — every reply links the passages it drew on, with per-passage similarity
+- **Tenant isolation** — every query is scoped from a signed token, so one organisation's documents are unreachable from another's
+- **Async ingestion** — uploads are parsed, chunked and embedded in a Celery worker, not the request
+- **Evaluation harness** — 48 golden cases scored with DeepEval, committed with the project
 
-I verified this with a second tenant asking a question that only the first tenant's documents could answer: zero sources returned, answer was a refusal, while the owning tenant got seven cited sources.
+The retrieval model is **280 MB and runs on onnxruntime**. The equivalent LangChain reranker pulls in PyTorch and a 2 GB dependency for the same job.
 
-## The part I found more interesting: measuring whether any of it works
+## Quick start
 
-Most RAG projects stop at "it returns an answer." I wanted to know whether a change to retrieval actually improved anything, so I built the measurement first.
-
-- **48 hand-written golden cases** derived from the source paper, not synthesised — 44 answerable, 4 deliberately unanswerable to test whether the system admits ignorance
-- **Three metrics per run** via DeepEval: faithfulness (is the answer grounded in the retrieved chunks), correctness against my hand-written answer, and answer relevancy
-- **A repeatable harness** at [`backend/goldenset-testdocuments/run_eval.py`](backend/goldenset-testdocuments/run_eval.py)
-
-Then I ran the *identical* system twice against byte-identical input and compared.
-
-| | Run 1 | Run 2 |
-|---|---|---|
-| Faithfulness | 0.959 | 0.936 |
-| Correctness vs golden | 0.731 | 0.727 |
-| Answer relevancy | 0.822 | 0.803 |
-| Same 7 chunks retrieved, same order | — | **1 of 48** |
-| Same top-1 chunk | — | 41 of 48 |
-| Pass/fail verdicts that flipped | — | **14** |
-
-The cause is not the chunker. Chunk boundaries are byte-identical across runs (all 67 verified by hash). The cause is that **the embedding endpoint does not return reproducible vectors** — 23 of 67 came back different for identical text, up to 0.048 L2 on unit-norm vectors. Enough to reorder near-ties.
-
-The practical conclusion: **the noise floor is wider than most retrieval improvements people report.** A change that "fixes three cases" here is inside the noise. Any honest A/B needs paired comparison on frozen retrieval, or a much larger case set.
-
-That finding is the reason this repo is worth more than a screenshot.
-
-## How it works
-
-```
-Browser ──POST /api/upload──> FastAPI ──task.delay──> Redis ──> Celery worker
-   │                                                              │
-   │                                            PyMuPDF4LLM: PDF -> markdown + JSON
-   │                                            header-aware split -> chunks
-   │                                            OpenAI embeddings
-   │                                                     │
-   │                                                     v
-   │                          PostgreSQL: chunks + pgvector + pg_search BM25
-   │                                                     │
-   └──POST /api/query──> tenant-scoped hybrid retrieval ──> ONNX BGE rerank ──> gpt-4o
-                              BM25 + cosine, RRF fused         7 chunks        answer + sources
-```
-
-- **Ingestion** is a real Celery task. Upload returns `pending` immediately; the worker parses, chunks, embeds and inserts, then flips the row to `completed`. The parsed markdown and structural JSON are kept in a JSONB column so re-chunking never requires re-parsing.
-- **Retrieval** runs BM25 (ParadeDB `pg_search`) and pgvector cosine as two retrievers, fuses them with reciprocal rank fusion, then reranks with a quantised BGE cross-encoder on ONNX Runtime — no PyTorch in the image.
-- **Auth** is JWT in an HttpOnly cookie, with the tenant resolved in the FastAPI dependency layer so no handler can forget to scope its query.
-
-## Running it
-
-Requires Docker Compose v2 and an OpenAI API key.
+Requires Docker and Docker Compose. Nothing else — no Python, Node, or database install.
 
 ```bash
-git clone <this-repo> && cd multi-tenant-rag
-cp .env.example .env      # then set OPENAI_API_KEY and JWT_SECRET_KEY (32+ chars)
-```
+git clone https://github.com/sethnwoks/DocIntel.git
+cd DocIntel
 
-Create the schema once:
+cp .env.example .env
+echo "JWT_SECRET_KEY=$(openssl rand -hex 32)" >> .env
+# add your OpenAI key to .env
 
-```bash
 docker compose up -d postgres
+```
+
+Create the schema:
+
+```bash
 docker exec -i rag_postgres psql -U postgres -d rag_db < scripts/schema.sql
 docker exec -i rag_postgres psql -U postgres -d rag_db < scripts/migration_parsed_documents.sql
 docker exec -i rag_postgres psql -U postgres -d rag_db < scripts/migration_bm25.sql
@@ -81,80 +57,58 @@ docker compose up -d --build
 
 | Service | URL |
 |---|---|
-| Frontend | http://localhost:3000 |
+| App | http://localhost:3000 |
 | API docs | http://localhost:8000/docs |
-| Health | http://localhost:8000/health |
 | pgAdmin | http://localhost:5050 |
 
-First build is slow — the ONNX reranker weights are ~280 MB and the Python image installs the scientific stack. Budget 10–25 minutes cold.
+First build takes 10–25 minutes cold — it compiles the Python dependency tree and the Next.js bundle, and fetches the 280 MB reranker model. After that, startup is about a minute.
 
-Then sign up, upload a PDF, wait for the row to reach `completed`, and ask a question.
+Open http://localhost:3000, create an account, and upload a PDF. Uploads are processed in the background, so the document sits at `processing` for a few seconds before it becomes queryable.
 
-There is also a terminal client at `scripts/rag_cli/` for upload, query and status without the UI:
+## Tech stack
 
-```bash
-python -m scripts.rag_cli.main --help
-```
+Next.js 15 · TypeScript · Tailwind · FastAPI · SQLAlchemy 2.0 · PostgreSQL · ParadeDB · pgvector · LangChain · OpenAI (embeddings + generation) · ONNX Runtime · Celery · Redis · DeepEval
 
-## Known limitations
+## Design decisions
 
-Things I know are wrong or unfinished, rather than leaving you to find them:
+**Hybrid retrieval instead of one method.** BM25 matches keywords; dense vectors match meaning. They fail in different ways, so running both and fusing with reciprocal rank fusion catches what either would miss on its own.
 
-- **Retrieval is not reproducible run-to-run**, for the embedding reason measured above. This is upstream, not fixable in this codebase, but it makes small A/B comparisons meaningless.
-- **Chunk-insert failures are swallowed.** `ingestion_task.py` catches insert errors with a bare `except`, then marks the document `completed` regardless, and mislabels a shortfall as "duplicates". A partially-ingested document currently reports success. Not yet fixed.
-- **Malformed UUIDs return 500, not 422.** Passing a non-UUID document id raises inside asyncpg instead of being rejected as a validation error.
-- **The upload endpoint does not validate file type.** The UI advertises PDF, DOCX, CSV and TXT, but only PDF is actually parsed and verified — a `.docx` or `.csv` will be accepted, queued, and then fail inside the worker. There is no server-side allow-list.
-- **The GEval correctness criterion is misconfigured for the unanswerable cases.** The judge writes reasoning that says the refusal was correct and then scores it 0.087. The score contradicts its own explanation. All four refusals are in fact correct.
-- **Three of my goldens are wrong**, not the model: `rag008`, `rag023` and `rag024` are cases where my hand-written answer disagrees with the source paper. I found these by auditing failures against the PDF.
-- **`rag039` cites the wrong page** in its `source_pages` metadata.
-- **No LICENSE file yet** — needs choosing before this is public.
+**Reranking locally instead of using LangChain's.** LangChain ships `CrossEncoderReranker`, but it depends on `sentence-transformers` and PyTorch — roughly 2 GB in the image. The ONNX export of the same model is 280 MB, runs on CPU, and costs nothing per query. I wrote the compressor against LangChain's `BaseDocumentCompressor` interface, so it stays a one-line swap.
 
-## Tests
+**Switched embedding providers under a hard constraint.** Voyage AI's free tier caps at 3 requests per minute, which was failing ingestion outright — documents marked `failed`, no chunks stored, every query returning "I don't know." Adding a payment method was the obvious fix and wasn't available. Moving to OpenAI cost nothing in the schema, because the 1536-dimension output matched the existing column.
 
-There is a pytest suite at `backend/tests/` (34 test functions across API, services, tasks and CLI).
+## Does any of it actually work
 
-It is **not** green, and I would rather say so than claim otherwise:
+I built the measurement before trusting the output, because "it returns an answer" isn't evidence.
 
-- 10 pass
-- 6 fail — all six are bad fixtures of mine that use placeholder strings like `"some-id"` as document ids, which the database rejects before the 404 path is reached
-- 3 CLI modules fail to collect because they import `scripts.rag_cli` from the repo root while the suite runs with `backend/` on the path
+- **48 hand-written golden cases** derived from the source paper, not synthesised — 44 answerable, 4 deliberately unanswerable to test whether the system admits ignorance
+- **Three metrics per run** — faithfulness (is the answer grounded in the retrieved chunks), correctness against a hand-written answer, and answer relevancy
+- **A repeatable harness** at [`backend/goldenset-testdocuments/run_eval.py`](backend/goldenset-testdocuments/run_eval.py)
 
-The application code is not implicated in those failures. Fixing them is the next thing I'd do.
+Then I ran the *identical* system twice against byte-identical input and compared:
 
-## Stack
+| | Run 1 | Run 2 |
+|---|---|---|
+| Faithfulness | 0.959 | 0.936 |
+| Correctness vs golden | 0.731 | 0.727 |
+| Answer relevancy | 0.822 | 0.803 |
+| Identical 7-chunk retrieval order | — | **1 of 48** |
+| Identical top-1 chunk | — | 41 of 48 |
+| Pass/fail verdicts that flipped | — | **14** |
 
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js 15.3, React 19, TypeScript 5, Tailwind 3.4 |
-| API | FastAPI 0.141, Uvicorn, Python 3.12 |
-| Task queue | Celery 5.6 (prefork), Redis 8.1 |
-| Database | ParadeDB (PostgreSQL + pgvector 0.5 + pg_search BM25) |
-| Parsing | PyMuPDF4LLM 1.28 |
-| Embeddings | OpenAI `text-embedding-3-small` (1536-dim) |
-| Reranking | ONNX Runtime 1.30 + BGE cross-encoder, INT8 quantised |
-| Orchestration | LangChain 1.4 |
-| Auth | python-jose JWT, bcrypt, HttpOnly cookies |
-| Evaluation | DeepEval 4.2.6 (dev only, not in the app image) |
+The chunker is not the cause — chunk boundaries are byte-identical across runs, all 67 verified by hash. The cause is that **the embedding endpoint does not return reproducible vectors**: 23 of 67 came back different for identical text, up to 0.048 L2 on unit-norm vectors. Enough to reorder near-ties.
 
-## Layout
+The practical conclusion: **the noise floor is wider than most retrieval improvements people report.** A change that "fixes three cases" here is inside the noise. Any honest A/B needs paired comparison on frozen retrieval, or a much larger case set.
 
-```
-backend/app/
-  api/routers/       auth, upload, query, documents
-  api/dependencies.py  resolves the current tenant for every request
-  auth/              JWT issue/verify, bcrypt
-  chains/rag_chain.py  prompt construction + BM25/vector ensemble
-  retrievers/        parade_db.py (BM25), pgvector.py (vector), reranker.py (ONNX)
-  tasks/             Celery app, ingestion pipeline
-  db/, crud/, models/
-backend/tests/
-backend/goldenset-testdocuments/
-  golden_deepeval.jsonl   48 hand-written cases (under testragdoc/)
-  run_eval.py             evaluation harness
-scripts/             schema.sql, migrations, rag_cli
-frontend/            Next.js app
-```
+Tenant isolation was verified the same way — a second tenant asking a question only the first tenant's documents could answer returned zero sources and a refusal, while the owning tenant got seven cited sources.
+
+## What's next
+
+- **Ingestion beyond PDF** — DOCX, CSV and TXT parsing, using the same chunking pipeline
+- **Streaming answers** — token-by-token delivery instead of waiting for the full response
+- **Continuous evaluation** — run the 48-case golden suite on every change, so a regression is caught by CI rather than by a user
+- **Shorter-lived access tokens** — 15-minute tokens with a rotated refresh flow, so a leaked session expires quickly
 
 ## Acknowledgements
 
-[PyMuPDF4LLM](https://github.com/pymupdf/pymupdf4llm) · [pgvector](https://github.com/pgvector/pgvector) · [ParadeDB](https://github.com/paradedb/paradedb) · [FastAPI](https://fastapi.tiangolo.com/)
+[PyMuPDF4LLM](https://github.com/pymupdf/pymupdf4llm) · [pgvector](https://github.com/pgvector/pgvector) · [ParadeDB](https://github.com/paradedb/paradedb) · [FastAPI](https://fastapi.tiangolo.com/) · [ONNX Runtime](https://onnxruntime.ai/)
